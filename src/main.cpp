@@ -8,11 +8,39 @@
 #include <commctrl.h>
 #include <objbase.h>
 #include <gdiplus.h>
+#include <shellapi.h>
+#include <shlobj.h>
 
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "gdiplus.lib")
+#pragma comment(lib, "shell32.lib")
+
+static bool RelaunchAsAdminIfNeeded() {
+    if (IsUserAnAdmin()) {
+        return false;
+    }
+    wchar_t path[MAX_PATH]{};
+    GetModuleFileNameW(nullptr, path, MAX_PATH);
+    SHELLEXECUTEINFOW sei{};
+    sei.cbSize = sizeof(sei);
+    sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+    sei.lpVerb = L"runas";
+    sei.lpFile = path;
+    sei.nShow = SW_SHOWNORMAL;
+    if (ShellExecuteExW(&sei)) {
+        if (sei.hProcess) {
+            CloseHandle(sei.hProcess);
+        }
+        return true;
+    }
+    return false;
+}
 
 int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
+    if (RelaunchAsAdminIfNeeded()) {
+        return 0;
+    }
+
     HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     ULONG_PTR gdiplusToken = 0;
     Gdiplus::GdiplusStartupInput gdiplusInput;

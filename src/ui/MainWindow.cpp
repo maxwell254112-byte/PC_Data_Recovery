@@ -135,6 +135,7 @@ LRESULT CALLBACK MainWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
         if (HIWORD(wParam) == CBN_SELCHANGE || HIWORD(wParam) == EN_CHANGE) {
             if (LOWORD(wParam) >= IDC_SEARCH && LOWORD(wParam) <= IDC_SORT) {
                 self->ApplyFilters();
+                self->UpdateStatusBar();
             }
         }
         return 0;
@@ -164,7 +165,6 @@ LRESULT CALLBACK MainWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
         self->lastProgress_ = *p;
         self->statusText_ = p->error.empty() ? p->stage : p->error;
         self->SetButtonsForState();
-        self->UpdateStatusBar();
         if (p->state == ScanState::Completed || p->state == ScanState::Failed) {
             KillTimer(hwnd, 1);
             self->ApplyFilters();
@@ -172,6 +172,7 @@ LRESULT CALLBACK MainWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
                 MessageBoxW(hwnd, p->error.c_str(), L"Scan", MB_ICONWARNING);
             }
         }
+        self->UpdateStatusBar();
         delete p;
         InvalidateRect(hwnd, nullptr, FALSE);
         return 0;
@@ -183,8 +184,9 @@ LRESULT CALLBACK MainWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
             self->results_.push_back(std::move(*f));
         }
         delete f;
-        if ((self->results_.size() & 0x3F) == 0) {
+        if ((self->results_.size() % 16) == 0) {
             self->ApplyFilters();
+            self->UpdateStatusBar();
         }
         return 0;
     }
@@ -696,63 +698,69 @@ void MainWindow::ApplyFilters() {
     now64.LowPart = now.dwLowDateTime;
     now64.HighPart = now.dwHighDateTime;
 
-    std::lock_guard<std::mutex> lock(resultsMutex_);
-    visible_.clear();
-    visible_.reserve(results_.size());
-    for (size_t i = 0; i < results_.size(); ++i) {
-        const auto& f = results_[i];
-        if (search[0] && !ContainsIgnoreCase(f.name, search) && !ContainsIgnoreCase(f.originalPath, search)) {
-            continue;
+    int shown = 0;
+    {
+        std::lock_guard<std::mutex> lock(resultsMutex_);
+        visible_.clear();
+        visible_.reserve(results_.size());
+        for (size_t i = 0; i < results_.size(); ++i) {
+            const auto& f = results_[i];
+            if (search[0] && !ContainsIgnoreCase(f.name, search) && !ContainsIgnoreCase(f.originalPath, search)) {
+                continue;
+            }
+            if (typeSel > 0) {
+                FileCategory want[] = {FileCategory::Other, FileCategory::Image, FileCategory::Video,
+                                       FileCategory::Audio, FileCategory::Document, FileCategory::Archive,
+                                       FileCategory::Database, FileCategory::Text};
+                if (f.category != want[typeSel]) continue;
+            }
+            if (confSel > 0) {
+                Confidence want[] = {Confidence::Excellent, Confidence::Excellent, Confidence::Good,
+                                     Confidence::Partial, Confidence::Corrupted};
+                if (f.confidence != want[confSel]) continue;
+            }
+            if (sizeSel == 1 && f.size >= 1024ull * 1024ull) continue;
+            if (sizeSel == 2 && (f.size < 1024ull * 1024ull || f.size > 10ull * 1024ull * 1024ull)) continue;
+            if (sizeSel == 3 && (f.size < 10ull * 1024ull * 1024ull || f.size > 100ull * 1024ull * 1024ull)) continue;
+            if (sizeSel == 4 && f.size <= 100ull * 1024ull * 1024ull) continue;
+            if (dateSel > 0 && f.hasTimestamps) {
+                ULARGE_INTEGER ft;
+                ft.LowPart = f.modified.dwLowDateTime;
+                ft.HighPart = f.modified.dwHighDateTime;
+                uint64_t age = now64.QuadPart > ft.QuadPart ? now64.QuadPart - ft.QuadPart : 0;
+                const uint64_t day = 864000000000ULL;
+                if (dateSel == 1 && age > 7 * day) continue;
+                if (dateSel == 2 && age > 30 * day) continue;
+                if (dateSel == 3 && age > 365 * day) continue;
+            } else if (dateSel > 0 && !f.hasTimestamps) {
+                continue;
+            }
+            visible_.push_back(i);
         }
-        if (typeSel > 0) {
-            FileCategory want[] = {FileCategory::Other, FileCategory::Image, FileCategory::Video,
-                                   FileCategory::Audio, FileCategory::Document, FileCategory::Archive,
-                                   FileCategory::Database, FileCategory::Text};
-            if (f.category != want[typeSel]) continue;
-        }
-        if (confSel > 0) {
-            Confidence want[] = {Confidence::Excellent, Confidence::Excellent, Confidence::Good,
-                                 Confidence::Partial, Confidence::Corrupted};
-            if (f.confidence != want[confSel]) continue;
-        }
-        if (sizeSel == 1 && f.size >= 1024ull * 1024ull) continue;
-        if (sizeSel == 2 && (f.size < 1024ull * 1024ull || f.size > 10ull * 1024ull * 1024ull)) continue;
-        if (sizeSel == 3 && (f.size < 10ull * 1024ull * 1024ull || f.size > 100ull * 1024ull * 1024ull)) continue;
-        if (sizeSel == 4 && f.size <= 100ull * 1024ull * 1024ull) continue;
-        if (dateSel > 0 && f.hasTimestamps) {
-            ULARGE_INTEGER ft;
-            ft.LowPart = f.modified.dwLowDateTime;
-            ft.HighPart = f.modified.dwHighDateTime;
-            uint64_t age = now64.QuadPart > ft.QuadPart ? now64.QuadPart - ft.QuadPart : 0;
-            const uint64_t day = 864000000000ULL;
-            if (dateSel == 1 && age > 7 * day) continue;
-            if (dateSel == 2 && age > 30 * day) continue;
-            if (dateSel == 3 && age > 365 * day) continue;
-        } else if (dateSel > 0 && !f.hasTimestamps) {
-            continue;
-        }
-        visible_.push_back(i);
+
+        std::sort(visible_.begin(), visible_.end(), [&](size_t a, size_t b) {
+            const auto& x = results_[a];
+            const auto& y = results_[b];
+            if (sortSel == 1) return x.size > y.size;
+            if (sortSel == 2) {
+                ULARGE_INTEGER xa{};
+                xa.LowPart = x.modified.dwLowDateTime;
+                xa.HighPart = x.modified.dwHighDateTime;
+                ULARGE_INTEGER ya{};
+                ya.LowPart = y.modified.dwLowDateTime;
+                ya.HighPart = y.modified.dwHighDateTime;
+                return xa.QuadPart > ya.QuadPart;
+            }
+            if (sortSel == 3) return x.typeName < y.typeName;
+            return _wcsicmp(x.name.c_str(), y.name.c_str()) < 0;
+        });
+
+        lastProgress_.filesFound = results_.size();
+        shown = static_cast<int>(visible_.size());
     }
 
-    std::sort(visible_.begin(), visible_.end(), [&](size_t a, size_t b) {
-        const auto& x = results_[a];
-        const auto& y = results_[b];
-        if (sortSel == 1) return x.size > y.size;
-        if (sortSel == 2) {
-            ULARGE_INTEGER xa{};
-            xa.LowPart = x.modified.dwLowDateTime;
-            xa.HighPart = x.modified.dwHighDateTime;
-            ULARGE_INTEGER ya{};
-            ya.LowPart = y.modified.dwLowDateTime;
-            ya.HighPart = y.modified.dwHighDateTime;
-            return xa.QuadPart > ya.QuadPart;
-        }
-        if (sortSel == 3) return x.typeName < y.typeName;
-        return _wcsicmp(x.name.c_str(), y.name.c_str()) < 0;
-    });
-
-    ListView_SetItemCountEx(resultList_, static_cast<int>(visible_.size()), 0);
-    lastProgress_.filesFound = results_.size();
+    ListView_SetItemCountEx(resultList_, shown, 0);
+    InvalidateRect(resultList_, nullptr, FALSE);
 }
 
 void MainWindow::UpdatePreview() {
@@ -788,14 +796,21 @@ void MainWindow::UpdatePreview() {
 }
 
 void MainWindow::UpdateStatusBar() {
+    size_t found = 0;
+    size_t shown = 0;
+    {
+        std::lock_guard<std::mutex> lock(resultsMutex_);
+        found = results_.size();
+        shown = visible_.size();
+    }
     std::wstring s = statusText_;
-    if (engine_.IsBusy() || lastProgress_.percent > 0) {
+    if (engine_.IsBusy() || lastProgress_.percent > 0 || found > 0) {
         s += L"   |   ";
         s += FormatPercent(lastProgress_.percent);
         s += L"   |   Files: ";
-        s += std::to_wstring(results_.size());
+        s += std::to_wstring(found);
         s += L" shown ";
-        s += std::to_wstring(visible_.size());
+        s += std::to_wstring(shown);
         if (lastProgress_.bytesPerSecond > 0) {
             s += L"   |   ";
             s += FormatSpeed(lastProgress_.bytesPerSecond);
@@ -853,18 +868,22 @@ void MainWindow::RecoverSelected(bool all) {
     }
 
     const auto& src = drives_[static_cast<size_t>(selectedDrive_)];
-    std::wstring dest = BrowseForFolder(hwnd_, L"Choose recovery destination (must be a different drive)",
+    std::wstring dest = BrowseForFolder(hwnd_, L"Choose recovery destination (another drive is safer)",
                                         config_.defaultRecoveryFolder);
     if (dest.empty()) {
         return;
     }
     if (RecoveryEngine::IsSameVolume(dest, src.letter)) {
-        MessageBoxW(hwnd_,
-            L"Recovery to the source volume is blocked.\r\n"
-            L"Writing recovered files onto the same drive can overwrite remaining deleted data.\r\n"
-            L"Please choose a folder on another drive.",
-            L"Safety", MB_ICONWARNING);
-        return;
+        int risk = MessageBoxW(hwnd_,
+            L"The destination is on the SAME drive as the source.\r\n\r\n"
+            L"Writing recovered files onto this disk can overwrite other deleted data.\r\n"
+            L"Another physical drive is safer.\r\n\r\n"
+            L"Continue recovery to this folder anyway?",
+            L"Same-drive recovery warning",
+            MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2);
+        if (risk != IDYES) {
+            return;
+        }
     }
     if (!ShowRecoverConfirm(hwnd_, files.size(), dest, src.letter)) {
         return;
