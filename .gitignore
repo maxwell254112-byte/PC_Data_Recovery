@@ -1,0 +1,12 @@
+build/
+dist/
+out/
+.vs/
+CMakeUserPresets.json
+*.user
+*.suo
+*.sdf
+*.opensdf
+logs/*.log
+data/history.db
+config/settings.ini
